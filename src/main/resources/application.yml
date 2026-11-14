@@ -1,0 +1,42 @@
+server:
+  port: 8091
+
+spring:
+  application:
+    name: uber-ai-assistant
+  ai:
+    model:
+      # ── The mock-vs-real-LLM switch ─────────────────────────────────────────────
+      # 'none' (default) disables the Anthropic chat auto-configuration, so NO real ChatModel
+      # bean is created and our deterministic MockUberChatModel takes over
+      # (@ConditionalOnMissingBean(ChatModel.class)). The app runs and answers end-to-end
+      # with ZERO API key.
+      #
+      # To use a REAL LLM instead:
+      #   1. export ANTHROPIC_API_KEY=sk-ant-...
+      #   2. set the property below to 'anthropic' (e.g. SPRING_AI_MODEL_CHAT=anthropic)
+      # Spring AI then auto-configures a real AnthropicChatModel; the mock backs off automatically.
+      chat: ${SPRING_AI_MODEL_CHAT:none}
+    anthropic:
+      # Empty by default → no key → real model stays off. Only used when chat=anthropic above.
+      api-key: ${ANTHROPIC_API_KEY:}
+      chat:
+        options:
+          model: claude-3-5-sonnet-latest
+
+# Base URL of the Uber platform api-gateway the tools call (start it on :8080 for live tool calls).
+uber:
+  base-url: ${UBER_BASE_URL:http://localhost:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.umang.uberai: INFO
