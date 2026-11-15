@@ -1,0 +1,13 @@
+services:
+  uber-ai-assistant:
+    build: .
+    ports:
+      - "8091:8091"
+    environment:
+      UBER_BASE_URL: http://host.docker.internal:8080
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8091/actuator/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 5

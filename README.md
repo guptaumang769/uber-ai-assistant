@@ -70,8 +70,9 @@ See **[DIAGRAMS.md](DIAGRAMS.md)** for the full HLD flowchart and a sequence dia
 - **RAG** (`rag/`) — FAQ/policy markdown (`resources/docs/`) is embedded into an in-memory
   `SimpleVectorStore` at startup; a `QuestionAnswerAdvisor` retrieves relevant passages for help
   questions. A tiny hash-based `MockEmbeddingModel` keeps this key-free.
-- **Memory** (`memory/MemoryConfig`) — `MessageWindowChatMemory` keyed by `conversationId`, so
-  follow-ups ("book that ride" after "what's the fare from A to B") keep context.
+- **Memory** (`memory/MemoryConfig`) — `MessageWindowChatMemory` backed by a Caffeine cache (max 1000
+  conversations, 30-min TTL), keyed by `conversationId`, so follow-ups ("book that ride" after
+  "what's the fare from A to B") keep context without leaking memory.
 - **Web** (`web/ChatController`) — blocking chat, streaming SSE, health; CORS open for a UI.
 
 ---
@@ -233,13 +234,38 @@ docker run -p 8091:8091 \
 JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn test
 ```
 
-Pure unit tests (no network, no key):
+**Unit tests** (no network, no key):
 - `RideToolsTest` — a real `WebClient` on a stub `ExchangeFunction` asserts each tool hits the
   right method + path (incl. the pricing query params) and unwraps the envelope, plus graceful
   degradation when the backend is down.
 - `MockUberChatModelTest` — asserts the mock's planner routes each intent to the correct tool
   (incl. recovering pickup/drop coordinates from conversation memory) and answers help questions
   from the RAG store.
+
+**Integration tests** (`ChatIntegrationTest`, `@SpringBootTest`):
+- Context loads with all beans wired (mock model, tools, RAG, Caffeine memory).
+- Health endpoint returns UP.
+- Chat endpoint returns a reply with the correct conversationId.
+- RAG query retrieves FAQ content.
+- Validation rejects blank and oversized messages with a structured error response.
+
+---
+
+## Known Limitations
+
+**Mock model routing** — The key-free `MockUberChatModel` uses keyword matching, not natural
+language understanding. It recognizes a fixed set of intents (fare / book / nearby / status / help).
+Ambiguous inputs like *"I booked a flight"* will misroute to the ride-booking tool. This is
+intentional — the mock exists only to demo the tool-calling, RAG, and memory pipeline offline.
+Switch to a real LLM (`SPRING_AI_MODEL_CHAT=anthropic`) for genuine natural language planning; the
+tool/RAG/memory pipeline is identical, only the planning engine changes.
+
+**Memory** — Conversation memory is bounded by a Caffeine cache (max 1000 conversations, 30-minute
+idle TTL). This is sufficient for demo and interview purposes; a production deployment would use a
+persistent store (Redis, database).
+
+**Single-user** — No authentication or multi-tenant isolation. The `conversationId` is caller-supplied
+with no ownership check.
 
 ---
 
@@ -250,8 +276,9 @@ Pure unit tests (no network, no key):
 - Agent: `ChatClient.builder(chatModel).defaultSystem(...).defaultTools(...).defaultAdvisors(...).build()`;
   per-request `.prompt().user(...).advisors(a -> a.param(ChatMemory.CONVERSATION_ID, id)).call().content()`
   and `.stream().content()`.
-- Memory: `MessageWindowChatMemory.builder().chatMemoryRepository(new InMemoryChatMemoryRepository()).maxMessages(n).build()`
-  + `MessageChatMemoryAdvisor.builder(chatMemory).build()`.
+- Memory: `MessageWindowChatMemory.builder().chatMemoryRepository(caffeineChatMemoryRepository).maxMessages(n).build()`
+  + `MessageChatMemoryAdvisor.builder(chatMemory).build()`. Caffeine cache limits to 1000 conversations with
+  30-min idle TTL.
 - RAG: `SimpleVectorStore.builder(embeddingModel).build()` +
   `QuestionAnswerAdvisor.builder(vectorStore).build()`.
 - Mock model: implements `ChatModel.call(Prompt)` and `stream(Prompt)`, returning
