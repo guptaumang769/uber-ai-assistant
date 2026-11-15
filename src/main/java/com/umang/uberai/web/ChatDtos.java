@@ -1,16 +1,22 @@
 package com.umang.uberai.web;
 
-/** Request/response payloads for the chat API. */
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 public final class ChatDtos {
 
     private ChatDtos() {
     }
 
-    /** Chat request. {@code conversationId} scopes the memory; {@code message} is the user's turn. */
-    public record ChatRequest(String conversationId, String message) {
+    public record ChatRequest(
+            @Size(max = 100, message = "conversationId must be at most 100 characters")
+            String conversationId,
+
+            @NotBlank(message = "message must not be blank")
+            @Size(max = 4000, message = "message must be at most 4000 characters")
+            String message) {
     }
 
-    /** Chat response: the assistant's reply, echoing the conversation id. */
     public record ChatResponse(String conversationId, String reply) {
     }
 }
