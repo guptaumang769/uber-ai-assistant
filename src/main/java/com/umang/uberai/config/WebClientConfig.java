@@ -5,11 +5,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
 
-/**
- * A {@link WebClient} pointed at the Uber platform api-gateway. The base URL is configurable
- * (default {@code http://localhost:8080}); the {@code RideTools} use this client to call the real
- * Uber HTTP APIs. We treat that backend as an opaque external service.
- */
+import com.umang.uberai.http.BackendClient;
+
 @Configuration
 public class WebClientConfig {
 
@@ -18,5 +15,10 @@ public class WebClientConfig {
         return WebClient.builder()
                 .baseUrl(baseUrl)
                 .build();
+    }
+
+    @Bean
+    public BackendClient uberBackendClient(WebClient uberWebClient) {
+        return new BackendClient(uberWebClient, "Uber");
     }
 }

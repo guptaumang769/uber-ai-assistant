@@ -6,44 +6,38 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.umang.uberai.http.BackendClient;
+
 import reactor.core.publisher.Mono;
 
-/**
- * Pure unit tests for {@link RideTools} — no network, no API key.
- *
- * <p>We build a real {@link WebClient} on a stub {@link ExchangeFunction} that captures the outgoing
- * request (so we can assert the HTTP method + path) and returns a canned {@code ApiResponse} envelope
- * (so we can assert the tools UNWRAP {@code data} correctly and degrade gracefully on errors).</p>
- */
 class RideToolsTest {
 
     private final String baseUrl = "http://localhost:8080";
 
-    /** Build RideTools whose WebClient always returns the given JSON body, capturing the request. */
     private RideTools toolsReturning(String jsonBody, AtomicReference<ClientRequest> captured) {
         ExchangeFunction exchange = request -> {
             captured.set(request);
-            ClientResponse response = ClientResponse.create(org.springframework.http.HttpStatus.OK)
+            ClientResponse response = ClientResponse.create(HttpStatus.OK)
                     .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                     .body(jsonBody)
                     .build();
             return Mono.just(response);
         };
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new RideTools(client);
+        return new RideTools(new BackendClient(client, "Uber"));
     }
 
-    /** Build RideTools whose WebClient always errors (simulates backend down). */
     private RideTools toolsFailing() {
         ExchangeFunction exchange = request -> Mono.error(new RuntimeException("connection refused"));
         WebClient client = WebClient.builder().baseUrl(baseUrl).exchangeFunction(exchange).build();
-        return new RideTools(client);
+        return new RideTools(new BackendClient(client, "Uber"));
     }
 
     @Test
@@ -61,7 +55,6 @@ class RideToolsTest {
         String query = captured.get().url().getQuery();
         assertThat(query).contains("pickupLat=12.97").contains("pickupLng=77.59")
                 .contains("dropLat=13.0").contains("dropLng=77.6");
-        // Unwrapped from the envelope's data object:
         assertThat(result).contains("4.2").contains("1.5").contains("180");
     }
 

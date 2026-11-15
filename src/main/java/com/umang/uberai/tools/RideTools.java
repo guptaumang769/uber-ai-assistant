@@ -7,40 +7,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.umang.uberai.http.BackendClient;
 
-import reactor.core.publisher.Mono;
-
-/**
- * The AGENT'S HANDS.
- *
- * <p>Each public method annotated with {@link Tool} is a "tool" the LLM can decide to invoke while
- * planning. Spring AI turns each method into a JSON function schema (name + description + typed
- * params) that is advertised to the model. When the model emits a tool call, Spring AI deserializes
- * the arguments, invokes the method, and feeds the returned String back into the conversation so the
- * model can OBSERVE the result and continue planning (plan -> act -> observe loop).</p>
- *
- * <p>The {@code description} on each {@link Tool} is what the model actually reads to decide WHEN to
- * call a tool, so it is written for the model, not for humans.</p>
- *
- * <p>These call the real Uber platform api-gateway over HTTP via a {@link WebClient}. We deliberately
- * do NOT import any uber-platform classes — the backend is treated as an opaque external HTTP service
- * returning an {@code ApiResponse<T>} envelope {@code {success, data, error}} which we unwrap here into
- * concise, model-friendly Strings. Every method degrades gracefully: if the backend is down we return a
- * friendly "backend unavailable" string rather than throwing, so the agent can still respond.</p>
- */
 @Component
 public class RideTools {
 
     private static final Logger log = LoggerFactory.getLogger(RideTools.class);
 
-    private final WebClient webClient;
+    private final BackendClient backend;
 
-    public RideTools(WebClient uberWebClient) {
-        this.webClient = uberWebClient;
+    public RideTools(BackendClient uberBackendClient) {
+        this.backend = uberBackendClient;
     }
 
     @Tool(description = "Estimate the fare for a ride between a pickup and a drop location. "
@@ -59,9 +39,9 @@ public class RideTools {
                 .queryParam("dropLat", dropLat)
                 .queryParam("dropLng", dropLng)
                 .toUriString();
-        JsonNode data = getJson(path);
+        JsonNode data = backend.getJson(path);
         if (data == null) {
-            return backendUnavailable("estimate the fare");
+            return backend.unavailableMessage("estimate the fare");
         }
         String distance = data.path("distanceKm").asText("?");
         String surge = data.path("surgeMultiplier").asText("1.0");
@@ -82,9 +62,9 @@ public class RideTools {
                 .queryParam("lng", lng)
                 .queryParam("radiusKm", 5)
                 .toUriString();
-        JsonNode data = getJson(path);
+        JsonNode data = backend.getJson(path);
         if (data == null) {
-            return backendUnavailable("find nearby drivers");
+            return backend.unavailableMessage("find nearby drivers");
         }
         if (!data.isArray() || data.isEmpty()) {
             return "No drivers are currently available near " + lat + "," + lng + ".";
@@ -125,9 +105,9 @@ public class RideTools {
                 "pickupLng", pickupLng,
                 "dropLat", dropLat,
                 "dropLng", dropLng);
-        JsonNode data = postJson("/api/v1/rides", body);
+        JsonNode data = backend.postJson("/api/v1/rides", body);
         if (data == null) {
-            return backendUnavailable("request the ride");
+            return backend.unavailableMessage("request the ride");
         }
         String rideId = data.path("id").asText(data.path("rideId").asText("?"));
         String status = data.path("status").asText("REQUESTED");
@@ -140,9 +120,9 @@ public class RideTools {
             + "Call this when the user asks about the state of a ride they already requested. Requires the numeric rideId.")
     public String rideStatus(@ToolParam(description = "The numeric id of the ride request, as returned by requestRide") long rideId) {
         log.info("[tool] rideStatus(rideId={})", rideId);
-        JsonNode data = getJson("/api/v1/rides/" + rideId);
+        JsonNode data = backend.getJson("/api/v1/rides/" + rideId);
         if (data == null) {
-            return backendUnavailable("look up ride " + rideId);
+            return backend.unavailableMessage("look up ride " + rideId);
         }
         String status = data.path("status").asText("UNKNOWN");
         StringBuilder sb = new StringBuilder("Ride id=" + rideId + " status=" + status);
@@ -159,9 +139,9 @@ public class RideTools {
             + "Call this when the user wants to track a trip or asks where their driver/trip is. Requires the numeric tripId.")
     public String tripStatus(@ToolParam(description = "The numeric id of the trip, as returned by rideStatus") long tripId) {
         log.info("[tool] tripStatus(tripId={})", tripId);
-        JsonNode data = getJson("/api/v1/trips/" + tripId);
+        JsonNode data = backend.getJson("/api/v1/trips/" + tripId);
         if (data == null) {
-            return backendUnavailable("look up trip " + tripId);
+            return backend.unavailableMessage("look up trip " + tripId);
         }
         String status = data.path("status").asText("UNKNOWN");
         StringBuilder sb = new StringBuilder("Trip id=" + tripId + " status=" + status);
@@ -172,71 +152,5 @@ public class RideTools {
             sb.append(", fare=₹").append(data.path("fare").asText());
         }
         return sb.toString();
-    }
-
-    // --- HTTP helpers: call the backend and unwrap the ApiResponse<T> { success, data, error } envelope. ---
-
-    /** GET the path, return the {@code data} node of the ApiResponse envelope, or null if the backend is unreachable. */
-    private JsonNode getJson(String path) {
-        try {
-            JsonNode envelope = webClient.get()
-                    .uri(path)
-                    .retrieve()
-                    .bodyToMono(JsonNode.class)
-                    .onErrorResume(ex -> {
-                        log.warn("[tool] GET {} failed: {}", path, ex.toString());
-                        return Mono.empty();
-                    })
-                    .block();
-            return unwrap(envelope);
-        } catch (Exception ex) {
-            log.warn("[tool] GET {} threw: {}", path, ex.toString());
-            return null;
-        }
-    }
-
-    /** POST the body to the path, return the {@code data} node of the ApiResponse envelope, or null if unreachable. */
-    private JsonNode postJson(String path, Object body) {
-        try {
-            JsonNode envelope = webClient.post()
-                    .uri(path)
-                    .bodyValue(body)
-                    .retrieve()
-                    .bodyToMono(JsonNode.class)
-                    .onErrorResume(ex -> {
-                        log.warn("[tool] POST {} failed: {}", path, ex.toString());
-                        return Mono.empty();
-                    })
-                    .block();
-            return unwrap(envelope);
-        } catch (Exception ex) {
-            log.warn("[tool] POST {} threw: {}", path, ex.toString());
-            return null;
-        }
-    }
-
-    /**
-     * Unwrap the {@code ApiResponse<T> { success, data, error }} envelope. Returns the {@code data} node,
-     * or null if the envelope is missing/unsuccessful. If the response is not enveloped (plain body),
-     * returns it as-is so the tools still work against a non-enveloped mock.
-     */
-    private JsonNode unwrap(JsonNode envelope) {
-        if (envelope == null || envelope.isNull()) {
-            return null;
-        }
-        if (envelope.has("success") || envelope.has("data")) {
-            if (envelope.has("success") && !envelope.path("success").asBoolean(true)) {
-                log.warn("[tool] backend returned success=false, error={}", envelope.path("error").toString());
-                return null;
-            }
-            JsonNode data = envelope.get("data");
-            return (data == null || data.isNull()) ? null : data;
-        }
-        return envelope; // not an envelope; use as-is
-    }
-
-    private String backendUnavailable(String action) {
-        return "The Uber backend is currently unavailable, so I couldn't " + action
-                + ". Please make sure the uber-platform api-gateway is running (default http://localhost:8080) and try again.";
     }
 }
